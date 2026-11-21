@@ -14,6 +14,9 @@ import android.graphics.Color
 import android.graphics.ColorMatrix
 import android.graphics.ColorMatrixColorFilter
 import android.graphics.Outline
+import android.graphics.RenderEffect
+import android.graphics.Shader
+import android.view.MotionEvent
 import android.graphics.Typeface
 import android.graphics.drawable.AdaptiveIconDrawable
 import android.graphics.drawable.Drawable
@@ -61,6 +64,13 @@ class MainActivity : Activity() {
     private lateinit var pager: ViewPager2
     private lateinit var dots: LinearLayout
     private lateinit var dockBox: LinearLayout
+    private lateinit var homeRoot: LinearLayout
+    private lateinit var panel: ControlPanel
+
+    private var topInset = 0
+    private var gestureX = 0f
+    private var gestureY = 0f
+    private var tracking = false
 
     private var homePages: List<List<AppEntry>> = emptyList()
     private var libraryApps: List<AppEntry> = emptyList()
@@ -93,11 +103,13 @@ class MainActivity : Activity() {
 
     override fun onDestroy() {
         unregisterReceiver(packageReceiver)
+        panel.destroy()
         super.onDestroy()
     }
 
     override fun onNewIntent(intent: Intent) {
         super.onNewIntent(intent)
+        if (::panel.isInitialized && panel.visible) hidePanel()
         // Кнопка Home: вернуться на первую страницу, как в iOS
         if (intent.action == Intent.ACTION_MAIN && ::pager.isInitialized) {
             pager.setCurrentItem(0, true)
@@ -106,7 +118,51 @@ class MainActivity : Activity() {
 
     @Deprecated("Deprecated in Java")
     override fun onBackPressed() {
-        if (::pager.isInitialized && pager.currentItem != 0) pager.setCurrentItem(0, true)
+        if (::panel.isInitialized && panel.visible) {
+            hidePanel()
+        } else if (::pager.isInitialized && pager.currentItem != 0) {
+            pager.setCurrentItem(0, true)
+        }
+    }
+
+    // ---------- панель управления ----------
+
+    private fun showPanel() {
+        panel.show()
+        homeRoot.setRenderEffect(RenderEffect.createBlurEffect(40f, 40f, Shader.TileMode.CLAMP))
+    }
+
+    private fun hidePanel() {
+        panel.hide()
+        homeRoot.setRenderEffect(null)
+    }
+
+    /** Свайп вниз из правого верхнего угла открывает панель (как «Пункт управления»). */
+    override fun dispatchTouchEvent(ev: MotionEvent): Boolean {
+        if (!::panel.isInitialized || panel.visible) return super.dispatchTouchEvent(ev)
+        when (ev.actionMasked) {
+            MotionEvent.ACTION_DOWN -> {
+                gestureX = ev.rawX
+                gestureY = ev.rawY
+                tracking = ev.rawX > resources.displayMetrics.widthPixels * 0.5f &&
+                    ev.rawY > topInset && ev.rawY < topInset + dp(130)
+            }
+            MotionEvent.ACTION_MOVE -> if (tracking) {
+                val dy = ev.rawY - gestureY
+                val dx = kotlin.math.abs(ev.rawX - gestureX)
+                if (dy > dp(60) && dy > 2 * dx) {
+                    tracking = false
+                    val cancel = MotionEvent.obtain(ev)
+                    cancel.action = MotionEvent.ACTION_CANCEL
+                    super.dispatchTouchEvent(cancel)
+                    cancel.recycle()
+                    showPanel()
+                    return true
+                }
+            }
+            MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> tracking = false
+        }
+        return super.dispatchTouchEvent(ev)
     }
 
     // ---------- UI ----------
@@ -147,12 +203,18 @@ class MainActivity : Activity() {
         root.addView(pager)
         root.addView(dots)
         root.addView(dockBox)
-        setContentView(root)
+        homeRoot = root
+        panel = ControlPanel(this) { hidePanel() }
+        val frame = FrameLayout(this)
+        frame.addView(root)
+        frame.addView(panel.view, FrameLayout.LayoutParams(-1, -1))
+        setContentView(frame)
 
         ViewCompat.setOnApplyWindowInsetsListener(root) { v, insets ->
             val bars = insets.getInsets(
                 WindowInsetsCompat.Type.systemBars() or WindowInsetsCompat.Type.displayCutout()
             )
+            topInset = bars.top
             v.setPadding(0, bars.top + dp(8), 0, bars.bottom + dp(8))
             insets
         }
