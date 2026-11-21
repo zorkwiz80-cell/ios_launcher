@@ -9,7 +9,10 @@ import android.content.Intent
 import android.content.IntentFilter
 import android.content.pm.ApplicationInfo
 import android.content.pm.PackageManager
+import android.content.res.Configuration
 import android.graphics.Color
+import android.graphics.ColorMatrix
+import android.graphics.ColorMatrixColorFilter
 import android.graphics.Outline
 import android.graphics.Typeface
 import android.graphics.drawable.AdaptiveIconDrawable
@@ -45,6 +48,7 @@ data class AppEntry(
     val intent: Intent,
     val icon: Drawable,
     val category: Int,
+    val glyph: GlyphKind? = null,
 )
 
 class MainActivity : Activity() {
@@ -133,7 +137,7 @@ class MainActivity : Activity() {
             setPadding(dp(8), dp(14), dp(8), dp(14))
             background = GradientDrawable().apply {
                 cornerRadius = dpf(36)
-                setColor(Color.argb(70, 255, 255, 255))
+                setColor(glass())
             }
             layoutParams = LinearLayout.LayoutParams(-1, -2).apply {
                 setMargins(dp(12), dp(4), dp(12), dp(6))
@@ -176,7 +180,7 @@ class MainActivity : Activity() {
     private fun reload() {
         val pm = packageManager
         val q = Intent(Intent.ACTION_MAIN).addCategory(Intent.CATEGORY_LAUNCHER)
-        val all = pm.queryIntentActivities(q, 0)
+        val base = pm.queryIntentActivities(q, 0)
             .filter { it.activityInfo.packageName != packageName }
             .map { ri ->
                 val comp = ComponentName(ri.activityInfo.packageName, ri.activityInfo.name)
@@ -191,6 +195,18 @@ class MainActivity : Activity() {
             }
             .distinctBy { it.pkg }
             .sortedBy { it.label.lowercase() }
+
+        // Системные приложения получают собственные нарисованные иконки
+        val glyphPkgs = HashMap<String, GlyphKind>()
+        fun mark(kind: GlyphKind, i: Intent) {
+            resolvePkg(i)?.let { glyphPkgs.putIfAbsent(it, kind) }
+        }
+        mark(GlyphKind.PHONE, Intent(Intent.ACTION_DIAL))
+        mark(GlyphKind.MESSAGES, Intent(Intent.ACTION_MAIN).addCategory(Intent.CATEGORY_APP_MESSAGING))
+        mark(GlyphKind.BROWSER, Intent(Intent.ACTION_MAIN).addCategory(Intent.CATEGORY_APP_BROWSER))
+        mark(GlyphKind.CAMERA, Intent(MediaStore.INTENT_ACTION_STILL_IMAGE_CAMERA))
+        mark(GlyphKind.SETTINGS, Intent(Settings.ACTION_SETTINGS))
+        val all = base.map { a -> glyphPkgs[a.pkg]?.let { a.copy(glyph = it) } ?: a }
 
         libraryApps = all
 
@@ -242,7 +258,9 @@ class MainActivity : Activity() {
         val size = dp(sizeDp)
         return ImageView(this).apply {
             scaleType = ImageView.ScaleType.CENTER_CROP
-            setImageDrawable(fullBleed(app.icon, size))
+            setImageDrawable(
+                app.glyph?.let { GlyphIcon(it, isDark()) } ?: themedIcon(app.icon, size)
+            )
             clipToOutline = true
             outlineProvider = object : ViewOutlineProvider() {
                 override fun getOutline(view: View, outline: Outline) {
@@ -252,6 +270,36 @@ class MainActivity : Activity() {
             }
             elevation = dpf(1)
         }
+    }
+
+    private fun isDark() =
+        (resources.configuration.uiMode and Configuration.UI_MODE_NIGHT_MASK) ==
+            Configuration.UI_MODE_NIGHT_YES
+
+    /** Полупрозрачная «стеклянная» подложка: светлая днём, тёмная ночью. */
+    private fun glass(): Int =
+        if (isDark()) Color.argb(120, 18, 18, 22) else Color.argb(70, 255, 255, 255)
+
+    /**
+     * Светлая тема — обычная иконка. Тёмная тема — монохромная иконка Android 13+
+     * на тёмной плитке; если у приложения её нет, иконка приглушается.
+     */
+    private fun themedIcon(icon: Drawable, size: Int): Drawable {
+        if (!isDark()) return fullBleed(icon, size)
+        val mono = (icon as? AdaptiveIconDrawable)?.monochrome
+        if (mono != null) {
+            val tinted = mono.mutate().apply { setTint(0xFFE8E8ED.toInt()) }
+            val tile = GradientDrawable(
+                GradientDrawable.Orientation.TOP_BOTTOM,
+                intArrayOf(0xFF2E2E31.toInt(), 0xFF161618.toInt())
+            )
+            val inset = -(size / 4)
+            return LayerDrawable(arrayOf(tile, tinted)).apply {
+                setLayerInset(1, inset, inset, inset, inset)
+            }
+        }
+        val dim = ColorMatrix().apply { setScale(0.68f, 0.68f, 0.68f, 1f) }
+        return fullBleed(icon, size).apply { colorFilter = ColorMatrixColorFilter(dim) }
     }
 
     /** Адаптивные иконки Android растягиваем на весь квадрат, остальные кладём на белую подложку. */
@@ -407,7 +455,7 @@ class MainActivity : Activity() {
             setPadding(dp(16), 0, dp(16), 0)
             background = GradientDrawable().apply {
                 cornerRadius = dpf(12)
-                setColor(Color.argb(70, 255, 255, 255))
+                setColor(glass())
             }
             layoutParams = LinearLayout.LayoutParams(-1, dp(40)).apply { bottomMargin = dp(16) }
         })
@@ -428,7 +476,7 @@ class MainActivity : Activity() {
                 setPadding(dp(10), dp(10), dp(10), dp(10))
                 background = GradientDrawable().apply {
                     cornerRadius = dpf(22)
-                    setColor(Color.argb(70, 255, 255, 255))
+                    setColor(glass())
                 }
             }
             apps.take(4).forEach { app ->
